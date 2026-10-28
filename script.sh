@@ -6,9 +6,9 @@ set -euo pipefail
 MEMORY_ALLOCATION="4G"
 SERVER_DIR="$HOME/minecraft-server"
 export SDKMAN_DIR="$HOME/.sdkman"
+USER_AGENT="MinecraftServerScript/1.0 (admin@local.host)"
 
 echo "=== 1/5: System Checks & Base Tools ==="
-# Install packages. Use sudo only if we aren't root.
 if [ "$(id -u)" -eq 0 ]; then
     apt-get update
     apt-get install -y curl zip unzip wget screen jq
@@ -22,7 +22,7 @@ if [ ! -d "$SDKMAN_DIR" ]; then
     curl -s "https://get.sdkman.io" | bash
 fi
 
-# Disable strict mode temporarily for SDKMAN
+# Disable strict mode temporarily for SDKMAN initialization and setup
 set +u
 # shellcheck source=/dev/null
 source "$SDKMAN_DIR/bin/sdkman-init.sh"
@@ -34,25 +34,35 @@ fi
 sdk use java 21.0.2-graalce
 set -u
 
-echo "=== 3/5: Fetching Latest PaperMC Build ==="
+echo "=== 3/5: Fetching Latest PaperMC Server Build ==="
 mkdir -p "$SERVER_DIR"
 cd "$SERVER_DIR"
 
-# Dynamically fetch the absolute latest Minecraft version from PaperMC
-MINECRAFT_VERSION=$(curl -sL "https://api.papermc.io/v2/projects/paper" | jq -r '.versions[-1]')
-echo "Detected latest Minecraft version: $MINECRAFT_VERSION"
+echo "Querying PaperMC v3 API..."
+PROJECT_DATA=$(curl -sL -H "User-Agent: $USER_AGENT" "https://fill.papermc.io/v3/projects/paper")
 
-LATEST_BUILD=$(curl -sL "https://api.papermc.io/v2/projects/paper/versions/${MINECRAFT_VERSION}/builds" | jq -r '.builds[-1].build')
+# Extract the newest modern 1.2x Minecraft version
+MINECRAFT_VERSION=$(echo "$PROJECT_DATA" | jq -r '.versions | to_entries[] | .value[]' | grep '^1\.2' | sort -V | tail -n 1)
 
-if [ -z "$LATEST_BUILD" ] || [ "$LATEST_BUILD" == "null" ]; then
-    echo "[!] Error: Failed to fetch the latest build from PaperMC API." >&2
-    curl -sL "https://api.papermc.io/v2/projects/paper/versions/${MINECRAFT_VERSION}/builds"
+if [ -z "$MINECRAFT_VERSION" ] || [ "$MINECRAFT_VERSION" == "null" ]; then
+    echo "[!] Error: Failed to determine target Minecraft version from API." >&2
     exit 1
 fi
 
-DOWNLOAD_URL="https://api.papermc.io/v2/projects/paper/versions/${MINECRAFT_VERSION}/builds/${LATEST_BUILD}/downloads/paper-${MINECRAFT_VERSION}-${LATEST_BUILD}.jar"
+echo "Selected Minecraft Version: $MINECRAFT_VERSION"
 
-echo "Downloading PaperMC build #${LATEST_BUILD}..."
+# Fetch build list array
+BUILDS_DATA=$(curl -sL -H "User-Agent: $USER_AGENT" "https://fill.papermc.io/v3/projects/paper/versions/${MINECRAFT_VERSION}/builds")
+
+DOWNLOAD_URL=$(echo "$BUILDS_DATA" | jq -r '.[-1].downloads["server:default"].url // "null"')
+LATEST_BUILD=$(echo "$BUILDS_DATA" | jq -r '.[-1].id // "unknown"')
+
+if [ "$DOWNLOAD_URL" == "null" ] || [ -z "$DOWNLOAD_URL" ]; then
+    echo "[!] Error: Failed to retrieve server download URL." >&2
+    exit 1
+fi
+
+echo "Downloading PaperMC build #${LATEST_BUILD} for version ${MINECRAFT_VERSION}..."
 wget -q -O paper.jar "$DOWNLOAD_URL"
 
 echo "=== 4/5: Initializing Server & Accepting EULA ==="
@@ -67,12 +77,12 @@ fi
 echo "=== 5/5: Launching PaperMC Server in Screen ==="
 screen -X -S mcserver quit 2>/dev/null || true
 
-# Start server in a background detached screen
+# Start server in a background detached screen session
 screen -dmS mcserver java -Xms${MEMORY_ALLOCATION} -Xmx${MEMORY_ALLOCATION} -jar paper.jar --nogui
 
 echo "=================================================="
 echo " Setup Complete!"
-echo " PaperMC Server (build #${LATEST_BUILD}) is running."
+echo " PaperMC Server (Version: ${MINECRAFT_VERSION}, Build: #${LATEST_BUILD}) is running."
 echo " Server directory: $SERVER_DIR"
 echo " Use 'screen -r mcserver' to access the console."
 echo "=================================================="
