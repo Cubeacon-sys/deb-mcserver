@@ -4,16 +4,40 @@
 set -euo pipefail
 
 MINECRAFT_VERSION="1.21"
+MEMORY_ALLOCATION="4G"
+MC_USER="minecraft"
+
+echo "=== 1/5: System Checks & Base Tools ==="
+
+# Check if script is running as root
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Script run as root. Installing base packages..."
+    apt-get update
+    apt-get install -y curl zip unzip wget screen jq sudo
+
+    # Create a dedicated minecraft user if it doesn't exist
+    if ! id -u "$MC_USER" >/dev/null 2>&1; then
+        echo "Creating dedicated '$MC_USER' user for security..."
+        useradd -m -s /bin/bash "$MC_USER"
+    fi
+
+    echo "Dropping root privileges and switching to '$MC_USER'..."
+    # Re-execute this exact script as the minecraft user
+    exec sudo -u "$MC_USER" "$0" "$@"
+fi
+
+# From this point forward, the script is guaranteed to be running as a standard user.
+# If a normal user ran the script initially, install the tools via sudo.
+if ! command -v jq >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y curl zip unzip wget screen jq
+fi
+
+# Set directories dynamically based on the current executing user
 SERVER_DIR="$HOME/minecraft-server"
-MEMORY_ALLOCATION="3G"
-
-echo "=== 1/5: Updating System & Installing Base Tools ==="
-sudo apt-get update
-sudo apt-get install -y curl zip unzip wget screen jq
-
-echo "=== 2/5: Installing GraalVM 21 via SDKMAN ==="
 export SDKMAN_DIR="$HOME/.sdkman"
 
+echo "=== 2/5: Installing GraalVM 21 via SDKMAN ==="
 if [ ! -d "$SDKMAN_DIR" ]; then
     curl -s "https://get.sdkman.io" | bash
 fi
@@ -27,7 +51,7 @@ set -u
 # Set SDKMAN to non-interactive mode
 sdkman_auto_answer=true
 
-# Install GraalVM Java 21 (SDKMAN safely skips if already installed)
+# Install GraalVM Java 21
 sdk install java 21.0.2-graalce
 sdk use java 21.0.2-graalce
 
@@ -48,10 +72,8 @@ echo "Downloading PaperMC build #${LATEST_BUILD}..."
 wget -q -O paper.jar "$DOWNLOAD_URL"
 
 echo "=== 4/5: Initializing Server & Accepting EULA ==="
-# Run Java to trigger initial folder/EULA generation
 java -jar paper.jar --nogui || true
 
-# Force EULA to true regardless of previous state
 if [ -f "eula.txt" ]; then
     sed -i 's/eula=false/eula=true/' eula.txt
 else
@@ -59,15 +81,12 @@ else
 fi
 
 echo "=== 5/5: Launching PaperMC Server in Screen ==="
-# Stop any existing screen session with the same name to prevent overlaps
 screen -X -S mcserver quit 2>/dev/null || true
-
-# Start server in a background detached screen
 screen -dmS mcserver java -Xms${MEMORY_ALLOCATION} -Xmx${MEMORY_ALLOCATION} -jar paper.jar --nogui
 
 echo "=================================================="
 echo " Setup Complete!"
-echo " PaperMC Server (build #${LATEST_BUILD}) is running."
-echo " Use 'screen -r mcserver' to access the console."
-echo " Use 'Ctrl+A' followed by 'D' to detach."
+echo " PaperMC Server (build #${LATEST_BUILD}) is running securely as user: $(whoami)"
+echo " Server directory: $SERVER_DIR"
+echo " Use 'su - $(whoami)' then 'screen -r mcserver' to access the console."
 echo "=================================================="
