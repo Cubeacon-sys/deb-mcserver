@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-MINECRAFT_VERSION="1.21"
+# Dynamically fetch the absolute latest Minecraft version from PaperMC
+MINECRAFT_VERSION=$(curl -sL "https://api.papermc.io/v2/projects/paper" | jq -r '.versions[-1]')
 MEMORY_ALLOCATION="4G"
 MC_USER="minecraft"
 ALLOW_ROOT=false # Set to true ONLY if running inside a Docker container
@@ -48,7 +49,6 @@ fi
 set +u
 # shellcheck source=/dev/null
 source "$SDKMAN_DIR/bin/sdkman-init.sh"
-set -u
 
 sdkman_auto_answer=true
 
@@ -56,15 +56,19 @@ if ! sdk list java | grep -q "21.0.2-graalce" 2>/dev/null; then
     sdk install java 21.0.2-graalce || true
 fi
 sdk use java 21.0.2-graalce
+set -u
 
 echo "=== 3/5: Fetching Latest PaperMC ${MINECRAFT_VERSION} Build ==="
 mkdir -p "$SERVER_DIR"
 cd "$SERVER_DIR"
 
-LATEST_BUILD=$(curl -s "https://api.papermc.io/v2/projects/paper/versions/${MINECRAFT_VERSION}/builds" | jq -r '.builds[-1].build')
+# Added -L to ensure curl follows redirects
+LATEST_BUILD=$(curl -sL "https://api.papermc.io/v2/projects/paper/versions/${MINECRAFT_VERSION}/builds" | jq -r '.builds[-1].build')
 
 if [ -z "$LATEST_BUILD" ] || [ "$LATEST_BUILD" == "null" ]; then
     echo "[!] Error: Failed to fetch the latest build from PaperMC API." >&2
+    # Prints the exact API error if it fails again
+    curl -sL "https://api.papermc.io/v2/projects/paper/versions/${MINECRAFT_VERSION}/builds"
     exit 1
 fi
 
