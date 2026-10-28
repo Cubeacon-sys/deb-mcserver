@@ -1,39 +1,42 @@
 #!/usr/bin/env bash
 
-# Exit immediately on error or pipe failure, treat unset variables as an error
 set -euo pipefail
 
 MINECRAFT_VERSION="1.21"
 MEMORY_ALLOCATION="4G"
 MC_USER="minecraft"
+ALLOW_ROOT=false # Set to true ONLY if running inside a Docker container
 
 echo "=== 1/5: System Checks & Base Tools ==="
 
-# Check if script is running as root
+# Check if script is running as root (UID 0)
 if [ "$(id -u)" -eq 0 ]; then
-    echo "Script run as root. Installing base packages..."
-    apt-get update
-    apt-get install -y curl zip unzip wget screen jq sudo
+    if [ "$ALLOW_ROOT" = true ]; then
+        echo "WARNING: ALLOW_ROOT is true. Proceeding with installation as root..."
+        apt-get update
+        apt-get install -y curl zip unzip wget screen jq
+    else
+        echo "Script run as root. Installing base packages..."
+        apt-get update
+        apt-get install -y curl zip unzip wget screen jq sudo
 
-    # Create a dedicated minecraft user if it doesn't exist
-    if ! id -u "$MC_USER" >/dev/null 2>&1; then
-        echo "Creating dedicated '$MC_USER' user for security..."
-        useradd -m -s /bin/bash "$MC_USER"
+        if ! id -u "$MC_USER" >/dev/null 2>&1; then
+            echo "Creating dedicated '$MC_USER' user for security..."
+            useradd -m -s /bin/bash "$MC_USER"
+        fi
+
+        echo "Dropping root privileges and switching to '$MC_USER'..."
+        exec sudo -u "$MC_USER" "$0" "$@"
     fi
-
-    echo "Dropping root privileges and switching to '$MC_USER'..."
-    # Re-execute this exact script as the minecraft user
-    exec sudo -u "$MC_USER" "$0" "$@"
+else
+    # Running as a normal user, use sudo for packages
+    if ! command -v jq >/dev/null 2>&1; then
+        sudo apt-get update
+        sudo apt-get install -y curl zip unzip wget screen jq
+    fi
 fi
 
-# From this point forward, the script is guaranteed to be running as a standard user.
-# If a normal user ran the script initially, install the tools via sudo.
-if ! command -v jq >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y curl zip unzip wget screen jq
-fi
-
-# Set directories dynamically based on the current executing user
+# Set directories
 SERVER_DIR="$HOME/minecraft-server"
 export SDKMAN_DIR="$HOME/.sdkman"
 
@@ -42,17 +45,16 @@ if [ ! -d "$SDKMAN_DIR" ]; then
     curl -s "https://get.sdkman.io" | bash
 fi
 
-# Disable 'unset variables' check temporarily because SDKMAN violates it
 set +u
 # shellcheck source=/dev/null
 source "$SDKMAN_DIR/bin/sdkman-init.sh"
 set -u
 
-# Set SDKMAN to non-interactive mode
 sdkman_auto_answer=true
 
-# Install GraalVM Java 21
-sdk install java 21.0.2-graalce
+if ! sdk list java | grep -q "21.0.2-graalce" 2>/dev/null; then
+    sdk install java 21.0.2-graalce || true
+fi
 sdk use java 21.0.2-graalce
 
 echo "=== 3/5: Fetching Latest PaperMC ${MINECRAFT_VERSION} Build ==="
@@ -88,5 +90,9 @@ echo "=================================================="
 echo " Setup Complete!"
 echo " PaperMC Server (build #${LATEST_BUILD}) is running securely as user: $(whoami)"
 echo " Server directory: $SERVER_DIR"
-echo " Use 'su - $(whoami)' then 'screen -r mcserver' to access the console."
+if [ "$(id -u)" -eq 0 ]; then
+    echo " Use 'screen -r mcserver' to access the console."
+else
+    echo " Use 'su - $(whoami)' then 'screen -r mcserver' to access the console."
+fi
 echo "=================================================="
